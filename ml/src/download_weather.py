@@ -24,9 +24,9 @@ from common import (
 
 OURAIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 ARCHIVE_API = "https://archive-api.open-meteo.com/v1/archive"
-BATCH_SIZE = 10
-BATCH_SLEEP_SECONDS = 5
-MAX_RETRIES = 6
+BATCH_SIZE = 5
+BATCH_SLEEP_SECONDS = 20
+MAX_RETRIES = 8
 
 
 def collect_iata_codes() -> list[str]:
@@ -85,7 +85,7 @@ def fetch_weather_batch(
     for attempt in range(MAX_RETRIES):
         resp = requests.get(ARCHIVE_API, params=params, headers=HTTP_HEADERS, timeout=120)
         if resp.status_code == 429:
-            retry_after = float(resp.headers.get("Retry-After", 0)) or (10 * (2**attempt))
+            retry_after = float(resp.headers.get("Retry-After", 0)) or min(10 * (2**attempt), 300)
             print(f"  429 rate-limited, backing off {retry_after:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
             time.sleep(retry_after)
             continue
