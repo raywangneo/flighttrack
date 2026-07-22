@@ -1,6 +1,10 @@
 """Join processed BTS monthly parquet files with per-airport weather data
 and engineer the feature table used for training.
 
+Uses pandas merge_asof (vectorized nearest-timestamp join) rather than a
+per-row Python loop — with ~15M flight rows, a per-row .loc lookup would
+take hours; merge_asof does the equivalent join in seconds.
+
 Also emits weather_climatology.parquet: per-airport, per-month average of
 each weather feature, used by the backend to approximate weather for
 flights scheduled too far in the future for a real forecast.
@@ -13,7 +17,7 @@ import pandas as pd
 from common import CLIMATOLOGY_PATH, PROCESSED_DIR, WEATHER_HOURLY_VARS, WEATHER_RAW_DIR
 
 FEATURES_PATH = PROCESSED_DIR / "features.parquet"
-WEATHER_WINDOW_HOURS = 2  # +/- window around scheduled local time to average weather over
+WEATHER_WINDOW_HOURS = 2  # max distance to the nearest hourly weather reading
 
 
 def _parse_crs_time(series: pd.Series) -> pd.Series:
@@ -37,59 +41,57 @@ def load_flights() -> pd.DataFrame:
     df["FlightDate"] = pd.to_datetime(df["FlightDate"])
     df["sched_dep_hour"] = _parse_crs_time(df["CRSDepTime"])
     df["sched_arr_hour"] = _parse_crs_time(df["CRSArrTime"])
-    return df
+    return df.reset_index(drop=True)
 
 
-def load_weather_lookup() -> dict[str, pd.DataFrame]:
-    lookup = {}
-    for path in WEATHER_RAW_DIR.glob("*.parquet"):
-        iata = path.stem
+def load_weather_all() -> pd.DataFrame:
+    frames = []
+    for path in sorted(WEATHER_RAW_DIR.glob("*.parquet")):
         w = pd.read_parquet(path)
-        w = w.set_index("time").sort_index()
-        lookup[iata] = w
-    if not lookup:
+        w["iata"] = path.stem
+        frames.append(w)
+    if not frames:
         raise RuntimeError("No weather parquet files found — run download_weather.py first.")
-    return lookup
+    weather_all = pd.concat(frames, ignore_index=True)
+    # merge_asof requires the "on" column sorted globally (the "by" grouping
+    # only restricts matches, it doesn't need its own sort order).
+    weather_all = weather_all.sort_values("time").reset_index(drop=True)
+    return weather_all
 
 
-def _weather_at(
-    weather_lookup: dict[str, pd.DataFrame], iata: str, ts: pd.Timestamp
-) -> dict[str, float]:
-    w = weather_lookup.get(iata)
-    if w is None:
-        return {f"{v}": pd.NA for v in WEATHER_HOURLY_VARS}
-    window = w.loc[
-        ts - pd.Timedelta(hours=WEATHER_WINDOW_HOURS) : ts + pd.Timedelta(hours=WEATHER_WINDOW_HOURS)
-    ]
-    if window.empty:
-        return {v: pd.NA for v in WEATHER_HOURLY_VARS}
-    return {v: window[v].mean() for v in WEATHER_HOURLY_VARS if v in window.columns}
+def _asof_join(iata: pd.Series, ts: pd.Series, weather_all: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    keys = pd.DataFrame({"iata": iata.to_numpy(), "time": ts.to_numpy()})
+    keys["_row"] = range(len(keys))
+    keys_sorted = keys.sort_values("time")
+
+    merged = pd.merge_asof(
+        keys_sorted,
+        weather_all,
+        on="time",
+        by="iata",
+        direction="nearest",
+        tolerance=pd.Timedelta(hours=WEATHER_WINDOW_HOURS),
+    )
+    merged = merged.sort_values("_row").reset_index(drop=True)
+    return merged[WEATHER_HOURLY_VARS].add_prefix(prefix)
 
 
-def attach_weather(df: pd.DataFrame, weather_lookup: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def attach_weather(df: pd.DataFrame, weather_all: pd.DataFrame) -> pd.DataFrame:
     dep_ts = df["FlightDate"] + pd.to_timedelta(df["sched_dep_hour"], unit="h")
     arr_ts = df["FlightDate"] + pd.to_timedelta(df["sched_arr_hour"], unit="h")
 
-    origin_weather = [
-        _weather_at(weather_lookup, o, t) for o, t in zip(df["Origin"], dep_ts)
-    ]
-    dest_weather = [
-        _weather_at(weather_lookup, d, t) for d, t in zip(df["Dest"], arr_ts)
-    ]
-
-    origin_df = pd.DataFrame(origin_weather, index=df.index).add_prefix("origin_")
-    dest_df = pd.DataFrame(dest_weather, index=df.index).add_prefix("dest_")
+    print("  joining origin weather...")
+    origin_df = _asof_join(df["Origin"], dep_ts, weather_all, "origin_")
+    print("  joining destination weather...")
+    dest_df = _asof_join(df["Dest"], arr_ts, weather_all, "dest_")
 
     return pd.concat([df, origin_df, dest_df], axis=1)
 
 
-def build_climatology(weather_lookup: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    rows = []
-    for iata, w in weather_lookup.items():
-        monthly = w.groupby(w.index.month)[WEATHER_HOURLY_VARS].mean()
-        for month, row in monthly.iterrows():
-            rows.append({"iata": iata, "month": month, **row.to_dict()})
-    clim = pd.DataFrame(rows)
+def build_climatology(weather_all: pd.DataFrame) -> pd.DataFrame:
+    tmp = weather_all.copy()
+    tmp["month"] = tmp["time"].dt.month
+    clim = tmp.groupby(["iata", "month"])[WEATHER_HOURLY_VARS].mean().reset_index()
     CLIMATOLOGY_PATH.parent.mkdir(parents=True, exist_ok=True)
     clim.to_parquet(CLIMATOLOGY_PATH, index=False)
     print(f"wrote {CLIMATOLOGY_PATH} ({len(clim)} airport-month rows)")
@@ -102,13 +104,14 @@ def build_features() -> pd.DataFrame:
     print(f"  {len(flights):,} flights after filtering cancelled/diverted")
 
     print("loading weather...")
-    weather_lookup = load_weather_lookup()
+    weather_all = load_weather_all()
+    print(f"  {len(weather_all):,} hourly weather rows across {weather_all['iata'].nunique()} airports")
 
     print("building climatology...")
-    build_climatology(weather_lookup)
+    build_climatology(weather_all)
 
-    print("joining weather to flights (this can take a few minutes)...")
-    features = attach_weather(flights, weather_lookup)
+    print("joining weather to flights...")
+    features = attach_weather(flights, weather_all)
 
     for col in ["Reporting_Airline", "Origin", "Dest"]:
         features[col] = features[col].astype("category")
