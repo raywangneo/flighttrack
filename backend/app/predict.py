@@ -5,6 +5,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 
@@ -33,6 +34,16 @@ def warm_up():
 def get_supported_airlines() -> list[str]:
     _, metadata = _load()
     return metadata["category_maps"]["Reporting_Airline"]
+
+
+def _apply_calibration(raw_prob: float, calibration: dict | None) -> float:
+    """Mirrors ml/src/train.py's apply_calibration — reimplemented here
+    (rather than imported) since the backend ships independently of the ml/
+    package. Isotonic regression is just a piecewise-linear lookup, so a
+    plain np.interp against the persisted breakpoints reproduces it exactly."""
+    if not calibration:
+        return raw_prob
+    return float(np.interp(raw_prob, calibration["x_thresholds"], calibration["y_thresholds"]))
 
 
 def _build_feature_row(req: PredictRequest, metadata: dict) -> pd.DataFrame:
@@ -74,7 +85,8 @@ def predict(req: PredictRequest) -> PredictResponse:
     features, weather_source = _build_feature_row(req, metadata)
 
     dmatrix = xgb.DMatrix(features, enable_categorical=True)
-    prob = float(booster.predict(dmatrix)[0])
+    raw_prob = float(booster.predict(dmatrix)[0])
+    prob = _apply_calibration(raw_prob, metadata.get("calibration"))
 
     threshold = metadata.get("decision_threshold", 0.5)
     if prob < 0.25:

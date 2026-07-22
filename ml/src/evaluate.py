@@ -19,7 +19,7 @@ from sklearn.metrics import (
 )
 
 from common import MODELS_DIR
-from train import CATEGORICAL_COLS, NUMERIC_COLS, TARGET_COL, apply_category_maps
+from train import CATEGORICAL_COLS, NUMERIC_COLS, TARGET_COL, apply_calibration, apply_category_maps
 
 
 def load_model_and_metadata():
@@ -40,7 +40,8 @@ def main():
     y_test = test[TARGET_COL].astype(int)
 
     dtest = xgb.DMatrix(X_test, enable_categorical=True)
-    probs = booster.predict(dtest)
+    raw_probs = booster.predict(dtest)
+    probs = apply_calibration(raw_probs, metadata.get("calibration"))
 
     auc = roc_auc_score(y_test, probs)
     pr_auc = average_precision_score(y_test, probs)

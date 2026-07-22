@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -146,6 +147,33 @@ def fit_xgboost(train: pd.DataFrame, val: pd.DataFrame, category_maps: dict[str,
     return model, feature_cols
 
 
+def fit_calibration(model, val: pd.DataFrame, category_maps: dict, feature_cols: list[str]) -> dict:
+    """Fit an isotonic regression mapping raw XGBoost probabilities to
+    calibrated ones, using the validation fold (not train, not test).
+    Persisted as breakpoints so predict.py can reproduce it with a plain
+    np.interp call — no need to ship a pickled sklearn object."""
+    val = apply_category_maps(val, category_maps)
+    raw_probs = model.predict_proba(val[feature_cols])[:, 1]
+
+    iso = IsotonicRegression(out_of_bounds="clip")
+    iso.fit(raw_probs, val[TARGET_COL])
+
+    gap = float(np.max(np.abs(iso.predict(raw_probs) - raw_probs)))
+    print(f"calibration fit: max adjustment on validation set = {gap:.3f}")
+
+    return {
+        "method": "isotonic",
+        "x_thresholds": iso.X_thresholds_.tolist(),
+        "y_thresholds": iso.y_thresholds_.tolist(),
+    }
+
+
+def apply_calibration(raw_probs: np.ndarray, calibration: dict) -> np.ndarray:
+    if not calibration:
+        return raw_probs
+    return np.interp(raw_probs, calibration["x_thresholds"], calibration["y_thresholds"])
+
+
 def main():
     print(f"loading {FEATURES_PATH}...")
     df = pd.read_parquet(FEATURES_PATH)
@@ -162,6 +190,8 @@ def main():
 
     numeric_medians = {col: float(train[col].median()) for col in NUMERIC_COLS}
 
+    calibration = fit_calibration(model, val, category_maps, feature_cols)
+
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     model.get_booster().save_model(str(MODELS_DIR / "model.json"))
 
@@ -173,6 +203,7 @@ def main():
         "numeric_medians": numeric_medians,
         "target_col": TARGET_COL,
         "decision_threshold": 0.5,
+        "calibration": calibration,
     }
     with open(MODELS_DIR / "feature_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)

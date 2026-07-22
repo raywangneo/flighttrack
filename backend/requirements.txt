@@ -2,5 +2,6 @@ fastapi
 uvicorn[standard]
 xgboost
 pandas
+numpy
 requests
 pydantic
