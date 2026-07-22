@@ -24,7 +24,9 @@ from common import (
 
 OURAIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 ARCHIVE_API = "https://archive-api.open-meteo.com/v1/archive"
-BATCH_SIZE = 25
+BATCH_SIZE = 10
+BATCH_SLEEP_SECONDS = 5
+MAX_RETRIES = 6
 
 
 def collect_iata_codes() -> list[str]:
@@ -80,8 +82,18 @@ def fetch_weather_batch(
         "hourly": ",".join(WEATHER_HOURLY_VARS),
         "timezone": "auto",
     }
-    resp = requests.get(ARCHIVE_API, params=params, headers=HTTP_HEADERS, timeout=120)
-    resp.raise_for_status()
+    for attempt in range(MAX_RETRIES):
+        resp = requests.get(ARCHIVE_API, params=params, headers=HTTP_HEADERS, timeout=120)
+        if resp.status_code == 429:
+            retry_after = float(resp.headers.get("Retry-After", 0)) or (10 * (2**attempt))
+            print(f"  429 rate-limited, backing off {retry_after:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+            time.sleep(retry_after)
+            continue
+        resp.raise_for_status()
+        break
+    else:
+        raise RuntimeError(f"Gave up after {MAX_RETRIES} retries on 429 rate limiting")
+
     payload = resp.json()
 
     # Single-location requests return one object; multi-location return a list.
@@ -110,7 +122,7 @@ def download_weather(start_date: str, end_date: str, force: bool = False) -> Non
         batch = todo.iloc[i : i + BATCH_SIZE]
         print(f"batch {i // BATCH_SIZE + 1}: {list(batch['iata'])}")
         fetch_weather_batch(batch, start_date, end_date)
-        time.sleep(1)  # be polite to the free API
+        time.sleep(BATCH_SLEEP_SECONDS)  # be polite to the free API
 
 
 if __name__ == "__main__":
