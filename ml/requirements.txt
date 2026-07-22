@@ -1,0 +1,6 @@
+pandas
+pyarrow
+scikit-learn
+xgboost
+requests
+matplotlib

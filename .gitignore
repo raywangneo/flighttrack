@@ -39,3 +39,12 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Python / ml
+.venv/
+__pycache__/
+*.pyc
+ml/data/raw/
+ml/data/processed/
+ml/models/*
+!ml/models/.gitkeep
