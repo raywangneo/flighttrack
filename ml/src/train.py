@@ -174,6 +174,31 @@ def apply_calibration(raw_probs: np.ndarray, calibration: dict) -> np.ndarray:
     return np.interp(raw_probs, calibration["x_thresholds"], calibration["y_thresholds"])
 
 
+def choose_thresholds(model, val: pd.DataFrame, category_maps: dict, feature_cols: list[str], calibration: dict) -> tuple[float, dict]:
+    """Pick a decision threshold and low/medium/high risk cutoffs from the
+    *calibrated* validation-set probability distribution, rather than
+    hardcoding 0.25/0.5 — isotonic calibration can compress the usable
+    probability range (e.g. max ~0.5 instead of ~1.0), so fixed absolute
+    cutoffs silently stop being meaningful."""
+    from sklearn.metrics import precision_recall_curve
+
+    val = apply_category_maps(val, category_maps)
+    raw_probs = model.predict_proba(val[feature_cols])[:, 1]
+    probs = apply_calibration(raw_probs, calibration)
+    y_val = val[TARGET_COL].to_numpy()
+
+    precisions, recalls, thresholds = precision_recall_curve(y_val, probs)
+    f1s = 2 * precisions * recalls / np.clip(precisions + recalls, 1e-9, None)
+    decision_threshold = float(thresholds[np.argmax(f1s[:-1])])
+
+    risk_thresholds = {
+        "low": float(np.percentile(probs, 33)),
+        "high": float(np.percentile(probs, 66)),
+    }
+    print(f"decision_threshold={decision_threshold:.3f}, risk_thresholds={risk_thresholds}")
+    return decision_threshold, risk_thresholds
+
+
 def main():
     print(f"loading {FEATURES_PATH}...")
     df = pd.read_parquet(FEATURES_PATH)
@@ -191,6 +216,7 @@ def main():
     numeric_medians = {col: float(train[col].median()) for col in NUMERIC_COLS}
 
     calibration = fit_calibration(model, val, category_maps, feature_cols)
+    decision_threshold, risk_thresholds = choose_thresholds(model, val, category_maps, feature_cols, calibration)
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     model.get_booster().save_model(str(MODELS_DIR / "model.json"))
@@ -202,7 +228,8 @@ def main():
         "category_maps": category_maps,
         "numeric_medians": numeric_medians,
         "target_col": TARGET_COL,
-        "decision_threshold": 0.5,
+        "decision_threshold": decision_threshold,
+        "risk_thresholds": risk_thresholds,
         "calibration": calibration,
     }
     with open(MODELS_DIR / "feature_metadata.json", "w") as f:

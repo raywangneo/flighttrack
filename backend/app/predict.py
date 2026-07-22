@@ -89,9 +89,10 @@ def predict(req: PredictRequest) -> PredictResponse:
     prob = _apply_calibration(raw_prob, metadata.get("calibration"))
 
     threshold = metadata.get("decision_threshold", 0.5)
-    if prob < 0.25:
+    risk_thresholds = metadata.get("risk_thresholds", {"low": 0.25, "high": 0.5})
+    if prob < risk_thresholds["low"]:
         risk_level = "low"
-    elif prob < 0.5:
+    elif prob < risk_thresholds["high"]:
         risk_level = "medium"
     else:
         risk_level = "high"
