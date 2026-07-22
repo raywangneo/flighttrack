@@ -24,9 +24,9 @@ from common import (
 
 OURAIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 ARCHIVE_API = "https://archive-api.open-meteo.com/v1/archive"
-BATCH_SIZE = 5
-BATCH_SLEEP_SECONDS = 20
-MAX_RETRIES = 8
+BATCH_SIZE = 1
+BATCH_SLEEP_SECONDS = 3
+MAX_RETRIES = 4
 
 
 def collect_iata_codes() -> list[str]:
