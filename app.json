@@ -20,6 +20,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "apiBaseUrl": "http://localhost:8000"
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
   }
 }
