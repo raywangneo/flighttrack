@@ -309,6 +309,7 @@ def build_features() -> pd.DataFrame:
             "Distance",
             "CRSElapsedTime",
             "ArrDel15",
+            "ArrDelayMinutes",
             "prior_arr_delay",
             "scheduled_turnaround_minutes",
             "first_flight_of_day",
