@@ -152,6 +152,13 @@ def fit_xgboost(train: pd.DataFrame, val: pd.DataFrame, category_maps: dict[str,
 
     print("class balance:", y_train.value_counts().sort_index().to_dict())
     sample_weight = compute_sample_weight("balanced", y_train)
+    # Early stopping picks the round that minimizes eval_set loss. If that
+    # loss is unweighted while training is weighted, early stopping judges
+    # against a different objective than the one being optimized — on an
+    # 80%-majority-class validation set, unweighted mlogloss heavily favors
+    # collapsing to the majority class, silently undoing the balanced
+    # training. Weight the validation set the same way so both agree.
+    sample_weight_val = compute_sample_weight("balanced", y_val)
 
     model = xgb.XGBClassifier(
         objective="multi:softprob",
@@ -165,7 +172,8 @@ def fit_xgboost(train: pd.DataFrame, val: pd.DataFrame, category_maps: dict[str,
     )
     model.fit(
         X_train, y_train, sample_weight=sample_weight,
-        eval_set=[(X_val, y_val)], verbose=False,
+        eval_set=[(X_val, y_val)], sample_weight_eval_set=[sample_weight_val],
+        verbose=False,
     )
     print(f"best iteration: {model.best_iteration}")
     return model, feature_cols
