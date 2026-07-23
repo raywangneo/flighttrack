@@ -34,7 +34,6 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
-from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -179,37 +178,30 @@ def fit_xgboost(train: pd.DataFrame, val: pd.DataFrame, category_maps: dict[str,
     return model, feature_cols
 
 
-def fit_calibration(model, val: pd.DataFrame, category_maps: dict, feature_cols: list[str]) -> dict:
-    """Fit one isotonic regression per class (one-vs-rest), on the
-    validation fold. apply_calibration() renormalizes across classes so the
-    5 calibrated probabilities still sum to 1 per prediction. Persisted as
-    breakpoints so predict.py can reproduce it with plain np.interp calls —
-    no need to ship pickled sklearn objects."""
-    val = apply_category_maps(val, category_maps)
-    raw_probs = model.predict_proba(val[feature_cols])  # (n, num_classes)
-    y_val = val[TARGET_COL].to_numpy()
-
-    per_class = []
-    max_gap = 0.0
-    for k in range(len(BUCKET_LABELS)):
-        iso = IsotonicRegression(out_of_bounds="clip")
-        y_binary = (y_val == k).astype(int)
-        iso.fit(raw_probs[:, k], y_binary)
-        calibrated_k = iso.predict(raw_probs[:, k])
-        max_gap = max(max_gap, float(np.max(np.abs(calibrated_k - raw_probs[:, k]))))
-        per_class.append({
-            "x_thresholds": iso.X_thresholds_.tolist(),
-            "y_thresholds": iso.y_thresholds_.tolist(),
-        })
-
-    print(f"calibration fit: max per-class adjustment on validation set = {max_gap:.3f}")
-    return {"method": "isotonic_ovr", "per_class": per_class}
+# NOTE on multi-class calibration: an earlier version of this file fit one
+# isotonic regression per class (one-vs-rest) and renormalized to sum to 1,
+# mirroring the binary model's calibration approach. That produced a badly
+# broken model in practice: with on_time at ~80% base rate, its isotonic
+# curve stays elevated (up to 1.0) across almost the whole raw-score range,
+# while minority classes' curves never exceed ~0.15-0.65 even at their own
+# highest raw scores — so after renormalizing, on_time swamped every
+# prediction regardless of what the raw model actually ranked highest
+# (verified directly: a true mega_late test row with raw probs favoring
+# mega_late [0.25] over on_time [0.07] came out of calibration as 60%
+# on_time). Per-class OvR calibration doesn't account for competing
+# probability mass from other classes, and breaks down badly under class
+# imbalance this severe. Raw softmax probabilities are used directly
+# instead — verified to give meaningfully non-zero precision/recall across
+# all 5 classes, unlike the calibrated version's near-total collapse to
+# on_time. Revisit with proper temperature scaling (a single scalar over
+# the logits, which preserves relative ranking) if better-calibrated
+# absolute probabilities are needed later.
 
 
-def apply_calibration(raw_probs: np.ndarray, calibration: dict) -> np.ndarray:
-    """raw_probs: shape (n, k) or (k,). Returns calibrated probabilities
-    renormalized to sum to 1 per row (independent one-vs-rest calibrations
-    don't naturally sum to 1)."""
+def apply_calibration(raw_probs: np.ndarray, calibration: dict | None) -> np.ndarray:
+    """Currently always a passthrough (calibration is None) — kept as the
+    integration point so predict.py doesn't need to change if a working
+    multi-class calibration method is added later."""
     if not calibration:
         return raw_probs
     single_row = raw_probs.ndim == 1
@@ -242,7 +234,10 @@ def main():
 
     numeric_medians = {col: float(train[col].median()) for col in NUMERIC_COLS}
 
-    calibration = fit_calibration(model, val, category_maps, feature_cols)
+    # See the NOTE above apply_calibration() — per-class isotonic calibration
+    # was tried and found to badly break multi-class predictions under this
+    # much class imbalance. Raw softmax probabilities are used directly.
+    calibration = None
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     model.get_booster().save_model(str(MODELS_DIR / "model.json"))
