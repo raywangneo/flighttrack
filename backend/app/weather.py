@@ -86,8 +86,13 @@ def _climatology_lookup(iata: str, month: int) -> dict:
 
 
 def get_weather(iata: str, target_dt: datetime) -> tuple[dict, Literal["forecast", "historical_average"]]:
+    # scheduled_departure is local wall-clock time at the origin airport with
+    # no offset, compared against the server's own (likely UTC) clock — a
+    # +/-1 day skew is expected depending on the airport's timezone relative
+    # to the server, so tolerate it rather than incorrectly falling back to
+    # climatology for a flight that's actually within the forecast horizon.
     days_out = (target_dt.date() - datetime.now().date()).days
-    if 0 <= days_out <= FORECAST_HORIZON_DAYS:
+    if -1 <= days_out <= FORECAST_HORIZON_DAYS:
         try:
             return _fetch_forecast(iata, target_dt), "forecast"
         except requests.RequestException:
