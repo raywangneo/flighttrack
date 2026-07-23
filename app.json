@@ -22,7 +22,7 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "apiBaseUrl": "http://localhost:8000"
+      "apiBaseUrl": "https://flighttrack-api.onrender.com"
     },
     "plugins": [
       "@react-native-community/datetimepicker"
