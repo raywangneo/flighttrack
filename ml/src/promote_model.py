@@ -6,7 +6,15 @@ have produced fresh artifacts.
 
 import shutil
 
-from common import AIRPORTS_CSV, CLIMATOLOGY_PATH, ML_ROOT, MODELS_DIR
+from common import (
+    AIRPORTS_CSV,
+    CLIMATOLOGY_PATH,
+    ML_ROOT,
+    MODELS_DIR,
+    PERFORMANCE_CLIMATOLOGY_PATH,
+    SCHEDULE_REFERENCE_PATH,
+    TRAFFIC_CLIMATOLOGY_PATH,
+)
 
 BACKEND_MODEL_DIR = ML_ROOT.parent / "backend" / "app" / "model"
 
@@ -15,6 +23,9 @@ FILES_TO_COPY = [
     (MODELS_DIR / "feature_metadata.json", BACKEND_MODEL_DIR / "feature_metadata.json"),
     (AIRPORTS_CSV, BACKEND_MODEL_DIR / "airports.csv"),
     (CLIMATOLOGY_PATH, BACKEND_MODEL_DIR / "weather_climatology.parquet"),
+    (TRAFFIC_CLIMATOLOGY_PATH, BACKEND_MODEL_DIR / "traffic_climatology.parquet"),
+    (PERFORMANCE_CLIMATOLOGY_PATH, BACKEND_MODEL_DIR / "performance_climatology.parquet"),
+    (SCHEDULE_REFERENCE_PATH, BACKEND_MODEL_DIR / "schedule_reference.parquet"),
 ]
 
 if __name__ == "__main__":

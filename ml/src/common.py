@@ -11,12 +11,21 @@ AIRPORTS_CSV = ML_ROOT / "data" / "airports.csv"
 CLIMATOLOGY_PATH = ML_ROOT / "data" / "weather_climatology.parquet"
 TRAFFIC_CLIMATOLOGY_PATH = ML_ROOT / "data" / "traffic_climatology.parquet"
 PERFORMANCE_CLIMATOLOGY_PATH = ML_ROOT / "data" / "performance_climatology.parquet"
+SCHEDULE_REFERENCE_PATH = ML_ROOT / "data" / "schedule_reference.parquet"
+SCHEDULE_REFERENCE_MONTHS = 3
+DEP_TIME_ROUNDING_MINUTES = 15
 
 # Raw BTS column name for the airline that actually operated the flight
 # (more predictive of delay patterns than the marketing/codeshare brand).
 # Confirmed against a live download of the Marketing_Carrier export — this
 # dataset has no "Reporting_Airline" column at all, unlike the legacy export.
 AIRLINE_SOURCE_COL = "IATA_Code_Operating_Airline"
+
+# Paired with AIRLINE_SOURCE_COL (the operating carrier) rather than the
+# marketing-carrier flight number, so airline+flight_number stays internally
+# consistent in codeshare cases (a marketing flight number can map to a
+# different operating carrier's own numbering).
+FLIGHT_NUMBER_COL = "Flight_Number_Operating_Airline"
 
 BTS_COLUMNS = [
     "FlightDate",
@@ -36,6 +45,7 @@ BTS_COLUMNS = [
     "Year",
     "CRSElapsedTime",
     "Tail_Number",
+    FLIGHT_NUMBER_COL,
 ]
 
 # Hourly variables confirmed available from Open-Meteo's historical archive API.
