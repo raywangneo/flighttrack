@@ -1,7 +1,9 @@
-"""Evaluate the trained model on the held-out (chronologically final) test
-months: ROC-AUC, PR-AUC, precision/recall at default and F1-optimal
-thresholds, and a calibration curve — calibration matters because the app
-displays a raw probability, not just a classification.
+"""Evaluate the trained bucketed delay-severity model on the held-out
+(chronologically final) test months: accuracy, log-loss, per-class
+precision/recall, a confusion matrix, "adjacent-bucket" accuracy (since the
+5 buckets are ordinal — predicting "late" when it was actually "very_late"
+is a much smaller miss than predicting "on_time"), and a per-class
+calibration check.
 """
 
 from __future__ import annotations
@@ -11,15 +13,15 @@ import json
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
-    average_precision_score,
-    precision_recall_curve,
-    roc_auc_score,
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    log_loss,
 )
 
 from common import MODELS_DIR
-from train import CATEGORICAL_COLS, NUMERIC_COLS, TARGET_COL, apply_calibration, apply_category_maps
+from train import BUCKET_LABELS, CATEGORICAL_COLS, TARGET_COL, apply_calibration, apply_category_maps
 
 
 def load_model_and_metadata():
@@ -37,45 +39,43 @@ def main():
     test = apply_category_maps(test, metadata["category_maps"])
     feature_cols = metadata["feature_order"]
     X_test = test[feature_cols]
-    y_test = test[TARGET_COL].astype(int)
+    y_test = test[TARGET_COL].astype(int).to_numpy()
 
     dtest = xgb.DMatrix(X_test, enable_categorical=True)
-    raw_probs = booster.predict(dtest)
+    raw_probs = booster.predict(dtest)  # (n, 5)
     probs = apply_calibration(raw_probs, metadata.get("calibration"))
+    preds = probs.argmax(axis=1)
 
-    auc = roc_auc_score(y_test, probs)
-    pr_auc = average_precision_score(y_test, probs)
-    print(f"ROC-AUC: {auc:.4f}  (0.5 = random, higher is better)")
-    print(f"PR-AUC:  {pr_auc:.4f}  (baseline = positive class rate = {y_test.mean():.4f})")
+    acc = accuracy_score(y_test, preds)
+    ll = log_loss(y_test, probs, labels=list(range(len(BUCKET_LABELS))))
+    print(f"Accuracy: {acc:.4f}  Log-loss: {ll:.4f}")
 
-    precisions, recalls, thresholds = precision_recall_curve(y_test, probs)
-    f1s = 2 * precisions * recalls / np.clip(precisions + recalls, 1e-9, None)
-    best_idx = np.argmax(f1s[:-1])
-    print(
-        f"F1-optimal threshold: {thresholds[best_idx]:.3f} "
-        f"(precision={precisions[best_idx]:.3f}, recall={recalls[best_idx]:.3f}, f1={f1s[best_idx]:.3f})"
-    )
+    adjacent_ok = (np.abs(preds - y_test) <= 1).mean()
+    print(f"Adjacent-bucket accuracy (predicted within 1 bucket of actual): {adjacent_ok:.4f}")
 
-    default_preds = (probs >= 0.5).astype(int)
-    default_precision = (
-        (default_preds & y_test.values).sum() / max(default_preds.sum(), 1)
-    )
-    default_recall = (default_preds & y_test.values).sum() / max(y_test.sum(), 1)
-    print(f"At threshold 0.5: precision={default_precision:.3f}, recall={default_recall:.3f}")
+    print("\nPer-class report:")
+    print(classification_report(y_test, preds, target_names=BUCKET_LABELS, zero_division=0))
 
-    frac_pos, mean_pred = calibration_curve(y_test, probs, n_bins=10, strategy="quantile")
-    print("\nCalibration (predicted vs actual delay rate, by decile):")
-    for p, a in zip(mean_pred, frac_pos):
-        bar = "#" * int(a * 50)
-        print(f"  predicted={p:.3f}  actual={a:.3f}  {bar}")
+    print("Confusion matrix (rows=actual, cols=predicted):")
+    cm = confusion_matrix(y_test, preds, labels=list(range(len(BUCKET_LABELS))))
+    header = "        " + "".join(f"{label[:8]:>10}" for label in BUCKET_LABELS)
+    print(header)
+    for i, label in enumerate(BUCKET_LABELS):
+        row = "".join(f"{cm[i, j]:>10,}" for j in range(len(BUCKET_LABELS)))
+        print(f"{label[:8]:>8}{row}")
 
-    max_calibration_gap = float(np.max(np.abs(frac_pos - mean_pred)))
-    print(f"\nmax calibration gap: {max_calibration_gap:.3f}")
-    if max_calibration_gap > 0.10:
-        print(
-            "  warning: calibration gap > 0.10 — consider wrapping with "
-            "CalibratedClassifierCV before shipping raw probabilities to the app."
-        )
+    print("\nPer-class calibration (predicted vs actual rate, by decile of that class's probability):")
+    for k, label in enumerate(BUCKET_LABELS):
+        y_binary = (y_test == k).astype(int)
+        p_k = probs[:, k]
+        try:
+            deciles = pd.qcut(p_k, 10, duplicates="drop")
+        except ValueError:
+            print(f"  {label}: not enough distinct probability values to bin")
+            continue
+        grouped = pd.DataFrame({"p": p_k, "y": y_binary, "bin": deciles}).groupby("bin", observed=True)
+        gap = float((grouped["p"].mean() - grouped["y"].mean()).abs().max())
+        print(f"  {label}: max calibration gap = {gap:.3f}")
 
 
 if __name__ == "__main__":
