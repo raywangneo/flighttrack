@@ -9,6 +9,8 @@ PROCESSED_DIR = ML_ROOT / "data" / "processed"
 MODELS_DIR = ML_ROOT / "models"
 AIRPORTS_CSV = ML_ROOT / "data" / "airports.csv"
 CLIMATOLOGY_PATH = ML_ROOT / "data" / "weather_climatology.parquet"
+TRAFFIC_CLIMATOLOGY_PATH = ML_ROOT / "data" / "traffic_climatology.parquet"
+PERFORMANCE_CLIMATOLOGY_PATH = ML_ROOT / "data" / "performance_climatology.parquet"
 
 # Raw BTS column name for the airline that actually operated the flight
 # (more predictive of delay patterns than the marketing/codeshare brand).
@@ -33,6 +35,7 @@ BTS_COLUMNS = [
     "Month",
     "Year",
     "CRSElapsedTime",
+    "Tail_Number",
 ]
 
 # Hourly variables confirmed available from Open-Meteo's historical archive API.
